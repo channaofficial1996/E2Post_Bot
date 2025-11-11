@@ -57,8 +57,8 @@ def build_inline_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("🐓ជជែកគ្នាដោយសេរី", url="https://t.me/E2public"),
-                InlineKeyboardButton("🎬 រូបភាព&វីដេអូ ថ្មីៗ", url="https://t.me/+L7kr82tH6ts5MjVl"),
+                InlineKeyboardButton("🐓ជជែកគ្នា⚽️", url="https://t.me/E2public"),
+                InlineKeyboardButton("🎬រូបភាព&វីដេអូ", url="https://t.me/+L7kr82tH6ts5MjVl"),
             ],
             [
                 InlineKeyboardButton("☎️បើកអាខោន", url="https://t.me/E2betcs"),
