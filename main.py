@@ -13,6 +13,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from telegram.constants import ChatMemberStatus
 
 # ====== ENV CONFIG ======
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -71,6 +72,35 @@ def build_reply_keyboard() -> ReplyKeyboardMarkup:
     # keyboard ដែលនៅជាប់ខាងក្រោម
     kb = [[KeyboardButton("▶️ ចាប់ផ្តើម")]]
     return ReplyKeyboardMarkup(kb, resize_keyboard=True, one_time_keyboard=False)
+
+
+# ====== AUTO DELETE HELPERS ======
+async def is_user_chat_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int) -> bool:
+    """Check if user is Telegram admin/owner in this chat."""
+    try:
+        member = await context.bot.get_chat_member(chat_id, user_id)
+        return member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
+    except Exception:
+        return False
+
+
+def is_sender_bot_self(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    msg = update.effective_message
+    if not msg or not msg.from_user:
+        return False
+    return msg.from_user.is_bot and (msg.from_user.id == context.bot.id)
+
+
+def is_sender_anonymous_admin_or_linked_channel(update: Update) -> bool:
+    """
+    If admin post as 'anonymous admin' or as linked channel,
+    Telegram will set sender_chat instead of from_user.
+    Those messages should NOT be deleted.
+    """
+    msg = update.effective_message
+    if not msg:
+        return False
+    return msg.sender_chat is not None
 
 
 # ====== HANDLERS ======
@@ -174,7 +204,7 @@ async def handle_caption(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=build_reply_keyboard(),
         )
     else:
-        await msg.reply_text("❌ បញ្ជូនមិនបានទៅក្រុមណਾਮ្ម៉ងទេ.", reply_markup=build_reply_keyboard())
+        await msg.reply_text("❌ បញ្ជូនមិនបានទៅក្រុមណាម្ម៉ងទេ.", reply_markup=build_reply_keyboard())
 
     # reset state
     context.user_data[STATE_KEY] = STATE_WAIT_MEDIA
@@ -225,6 +255,60 @@ async def channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
             print(f"error send to {gid}: {e}")
 
 
+# ====== GROUP AUTO DELETE (NEW) ======
+async def group_auto_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Auto delete post in target groups if sender is NOT:
+    - user in ADMIN_IDS (bot admin), OR
+    - Telegram chat admin/owner, OR
+    - this bot itself, OR
+    - anonymous admin / linked channel (sender_chat).
+    """
+    msg = update.effective_message
+    chat = update.effective_chat
+
+    if not msg or not chat:
+        return
+
+    # Only moderate in configured target groups
+    if chat.id not in TARGET_GROUP_IDS:
+        return
+
+    # Skip service messages (join, leave, pin, etc.)
+    if msg.new_chat_members or msg.left_chat_member or msg.pinned_message or msg.group_chat_created:
+        return
+
+    # Skip messages sent by this bot
+    if is_sender_bot_self(update, context):
+        return
+
+    # Skip anonymous admins / linked channels
+    if is_sender_anonymous_admin_or_linked_channel(update):
+        return
+
+    # If no from_user, cannot decide safely
+    if not msg.from_user:
+        return
+
+    user_id = msg.from_user.id
+
+    # Whitelist bot admin IDs from env
+    if user_id in ADMIN_IDS:
+        return
+
+    # Allow real chat admins/owner
+    if await is_user_chat_admin(context, chat.id, user_id):
+        return
+
+    # If none of the above -> delete this message
+    try:
+        await context.bot.delete_message(chat_id=chat.id, message_id=msg.message_id)
+    except Exception as e:
+        # មិនបាច់ raise ដោយកុំឲ្យ bot ឈប់
+        # print(f"delete failed in {chat.id}: {e}")
+        pass
+
+
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
@@ -242,7 +326,7 @@ def main():
     # channel auto-post
     app.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST, channel_post))
 
-    # media step
+    # media step (private)
     app.add_handler(
         MessageHandler(
             filters.ChatType.PRIVATE & (filters.VIDEO | filters.PHOTO | filters.Document.VIDEO),
@@ -255,6 +339,14 @@ def main():
         MessageHandler(
             filters.ChatType.PRIVATE & filters.TEXT & (~filters.COMMAND),
             handle_caption,
+        )
+    )
+
+    # ====== GROUP AUTO DELETE HANDLER (NEW) ======
+    app.add_handler(
+        MessageHandler(
+            filters.ChatType.GROUPS & ~filters.StatusUpdate.ALL,
+            group_auto_delete,
         )
     )
 
